@@ -32,13 +32,22 @@ def train_bpe(input_path: str | os.PathLike,
 
 
     with open(input_path, "r", encoding="utf-8") as f:
-        tail = ""
+        buffer = ""
 
-        while chunk := f.read(BLOCK):
-            data = tail + chunk # append unused tail
+        while True: 
+            chunk = f.read(BLOCK) # read a chunk/block of data into memory
+            
+            data = buffer + chunk if chunk else buffer # prepend buffer to the current chunk
+            # if the chunk is empty (reached EOF) and buffer is empty. break
+            if not data:
+                break
+
             parts = re.split(special_pat, data) # split data into parts using special_tokens as a delimiter
-            if len(parts) > 1:
-                tail = parts.pop()  # assign tail to the last part as it might be cutoff
+            
+            if chunk:
+                buffer = parts.pop()  # move last part to buffer if nothing was read from the file (EOF reached)
+            else:
+                buffer = ""
 
             # parts is a list of the split sections. 
             # iterate through each doc
@@ -50,8 +59,8 @@ def train_bpe(input_path: str | os.PathLike,
                     words.append(ids)  # append each list of bytes (ids) to the words list. the words list holds all the splits from the regex pattern
                     pair_counts.update(pairwise(ids))  # update counter with pairs from each match. same as looping through with zip(ids, ids[1:])
 
-
-    # time to count pairs. will use a max heap for this.
+    
+    # use a priority queue/heap to keep track of maximum pairs instead of using the max function
     # first build the initial heap
     count_heap = []
     for pair, count in pair_counts.items():
@@ -75,7 +84,7 @@ def train_bpe(input_path: str | os.PathLike,
         vocab[new_id] = b"".join(max_pair)
         merges.append(max_pair)
 
-        #print(f"Merge {i} - Merging {max_pair} -> {vocab[new_id]} with a count of {max_count} to index {new_id}")
+        #print(f"merge {i+1}/{num_merges}: {max_pair} -> {vocab[new_id]} index {new_id} had {max_count} occurrences")
         
         # a dictionary/counter to hold the changes made to pair counts during the merge. 
         # This will be used to update the heap and the pair_counts counter 
