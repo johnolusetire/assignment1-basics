@@ -84,7 +84,7 @@ def train_bpe(input_path: str | os.PathLike,
         vocab[new_id] = b"".join(max_pair)
         merges.append(max_pair)
 
-        #print(f"merge {i+1}/{num_merges}: {max_pair} -> {vocab[new_id]} index {new_id} had {max_count} occurrences")
+        print(f"merge {i+1}/{num_merges}: {max_pair} -> {vocab[new_id]} index {new_id} had {max_count} occurrences")
         
         # a dictionary/counter to hold the changes made to pair counts during the merge. 
         # This will be used to update the heap and the pair_counts counter 
@@ -97,6 +97,9 @@ def train_bpe(input_path: str | os.PathLike,
 
         # update heap and pair counter with only values that changed during merge
         # pair_counts.update(delta_count)
+        
+        # del pair_counts[max_pair]
+
         for pair, count_delta in delta_count.items():
             if count_delta != 0:
                 curr_count = pair_counts.get(pair, 0) + count_delta
@@ -148,7 +151,6 @@ def merge(ids: list[bytes], pair: tuple[bytes, bytes], local_delta: Counter[tupl
    
     return ids, local_delta
 
-
 # 1. Create a wrapper class to define custom sorting logic
 class HeapItem:
     def __init__(self, count, pair):
@@ -172,3 +174,36 @@ class HeapItem:
     def __repr__(self):
         """A nice representation for printing."""
         return f"HeapItem(count={self.count}, pair={self.pair})"
+    
+
+
+# def merge(ids: list[bytes], pair: tuple[bytes, bytes], local_delta: Counter[tuple[bytes, bytes]]) -> tuple[list[bytes], Counter[tuple[bytes, bytes]]]:
+#     A, B = pair[0], pair[1]  # pair is e.g (b'h', b'e')
+#     new_val = A + B  # new_val wil be b'he'
+    
+#     # two pointer in place merge
+#     write = read = 0
+#     while read < len(ids):
+#         if read < len(ids) - 1 and ids[read] == A and ids[read + 1] == B:
+#             # pair found. record the change for this list of ids by removing that pair from the count
+#             local_delta[pair] -= 1
+
+#             # remove pair to the left of found pair
+#             if write > 0:
+#                 local_delta[(ids[write - 1], ids[read])] -= 1
+#                 local_delta[(ids[write - 1], new_val)] += 1
+            
+#             ids[write] = new_val # write new_val into list of bytes
+#             read += 2 # skip the next element
+
+#             if read < len(ids):
+#                 local_delta[(ids[read - 1], ids[read])] -= 1
+#                 local_delta[(new_val, ids[read])] += 1
+#         else:
+#             ids[write] = ids[read]
+#             read += 1
+#         write += 1
+
+#     del ids[write:]
+   
+#     return ids, local_delta
