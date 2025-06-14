@@ -10,6 +10,10 @@ def train_bpe(input_path: str | os.PathLike,
               vocab_size: int,
               special_tokens: list[str]) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     
+    """
+    In this version, i just keep track of the list locations for each pair. so i know what pairs to jump directly to when merging. 
+    """
+    
     # vocab: dict[int, bytes] = {idx : bytes([idx]) for idx in range(256)} #initial vocab
     vocab = {idx : bytes([idx]) for idx in range(256)}
     merges: list[tuple[bytes, bytes]] = []
@@ -28,9 +32,8 @@ def train_bpe(input_path: str | os.PathLike,
     BLOCK = 64 * 1024 * 1024 # chunk block size
     pair_counts = Counter()
     words = []
-    #pair_positions = defaultdict(list)
-
-
+    pair_positions = defaultdict(Counter) # map of pair -> Counter(index for word, num_occurences)
+    #pair_positions = dict()
     with open(input_path, "r", encoding="utf-8") as f:
         buffer = ""
 
@@ -57,9 +60,17 @@ def train_bpe(input_path: str | os.PathLike,
                     # prev_id = None
                     ids = [bytes([b]) for b in match.group().encode("utf-8")]  # list of bytes in the encoded token 'hello' -> [b'h',b'e',b'l',b'l',b'o']
                     words.append(ids)  # append each list of bytes (ids) to the words list. the words list holds all the splits from the regex pattern
-                    pair_counts.update(pairwise(ids))  # update counter with pairs from each match. same as looping through with zip(ids, ids[1:])
+                    
+                    word_id = len(words) - 1
+                    
+                    for pair in pairwise(ids):
+                        pair_counts[pair] += 1
+                        pair_positions[pair][word_id] += 1
+                        # pair_positions[pair] = pair_positions.setdefault(pair, {})
+                        # pair_positions[pair][word_id] = pair_positions[pair].get(word_id, 0) + 1
 
-    
+
+
     # use a priority queue/heap to keep track of maximum pairs instead of using the max function
     # first build the initial heap
     count_heap = []
@@ -90,19 +101,26 @@ def train_bpe(input_path: str | os.PathLike,
         # This will be used to update the heap and the pair_counts counter 
         delta_count = Counter()
 
-        for ids in words:
-            if max_pair[0] in ids:
-                ids, delta_count = merge(ids=ids, pair=max_pair, local_delta=delta_count)
+        words_with_pair: dict[int, int] = pair_positions[max_pair]  
 
+        for word_id, num_occurence in words_with_pair.items():
+            if num_occurence > 0:
+                word = words[word_id]
+
+                ids, delta_count, pair_positions = merge(ids=word, pair=max_pair, word_id=word_id, 
+                                                    num_occurence = num_occurence, 
+                                                    local_count_delta=delta_count, 
+                                                    delta_pos=pair_positions)
+
+
+        del pair_positions[max_pair]
+        del pair_counts[max_pair]
 
         # update heap and pair counter with only values that changed during merge
         # pair_counts.update(delta_count)
-        
-        # del pair_counts[max_pair]
-
         for pair, count_delta in delta_count.items():
             if count_delta != 0:
-                curr_count = pair_counts.get(pair, 0) + count_delta
+                curr_count = pair_counts[pair] + count_delta
                 if curr_count > 0:
                     pair_counts[pair] = curr_count
                     heapq.heappush(count_heap, HeapItem(pair_counts[pair], pair)) # only push to heap if its count is greater than zero
@@ -110,7 +128,7 @@ def train_bpe(input_path: str | os.PathLike,
                     del pair_counts[pair]       
 
         i += 1   
-    
+
     for special in special_tokens:
         if len(vocab) >= vocab_size:
             break
@@ -119,37 +137,61 @@ def train_bpe(input_path: str | os.PathLike,
     return vocab, merges
 
 
-
-def merge(ids: list[bytes], pair: tuple[bytes, bytes], local_delta: Counter[tuple[bytes, bytes]]) -> tuple[list[bytes], Counter[tuple[bytes, bytes]]]:
-    A, B = pair[0], pair[1]  # pair is e.g (b'h', b'e')
-    new_val = A + B  # new_val wil be b'he'
+def merge(ids: list[bytes],  
+          pair: tuple[bytes, bytes],
+          word_id: int,
+          num_occurence: int, 
+          local_count_delta: Counter[tuple[bytes, bytes]],
+          delta_pos) -> tuple[list[bytes], Counter[tuple[bytes, bytes]], dict[tuple[bytes, bytes], dict]]:
     
-    # two pointer in place merge
-    write = read = 0
-    while read < len(ids):
-        if read < len(ids) - 1 and ids[read] == A and ids[read + 1] == B:
-            # pair found. record the change for this list of ids by removing that pair from the count
-            local_delta[pair] -= 1
+    A, B = pair[0], pair[1]
+    C = A + B
 
-            # remove pair to the left of found pair
-            if write > 0:
-                local_delta[(ids[write - 1], ids[read])] -= 1
-                local_delta[(ids[write - 1], new_val)] += 1
+    idx = merges_done = 0
+    
+
+    while idx < len(ids):
+        if idx < len(ids) - 1 and ids[idx] == A and ids[idx + 1] == B:
+            merges_done += 1
+
+            if idx > 0:
+                old_left_pair = (ids[idx - 1], ids[idx])
+                new_left_pair = (ids[idx - 1], C)
+
+                local_count_delta[old_left_pair] -= 1
+                local_count_delta[new_left_pair] += 1
+
+                delta_pos[old_left_pair][word_id] -= 1
+                delta_pos[new_left_pair][word_id] += 1
+
+                # delta_pos[old_left_pair][word_id] -= 1
+                # delta_pos[new_left_pair] = delta_pos.setdefault(new_left_pair, {})
+                # delta_pos[new_left_pair][word_id] = delta_pos[new_left_pair].get(word_id, 0) + 1
+                
+                
             
-            ids[write] = new_val # write new_val into list of bytes
-            read += 2 # skip the next element
+            ids[idx] = C
+            del ids[idx + 1]
 
-            if read < len(ids):
-                local_delta[(ids[read - 1], ids[read])] -= 1
-                local_delta[(new_val, ids[read])] += 1
-        else:
-            ids[write] = ids[read]
-            read += 1
-        write += 1
+            if idx + 1 < len(ids):
+                old_right_pair = (B, ids[idx + 1])
+                new_right_pair = (C, ids[idx + 1])
+                
+                local_count_delta[old_right_pair] -= 1
+                local_count_delta[new_right_pair] += 1
 
-    del ids[write:]
-   
-    return ids, local_delta
+                delta_pos[old_right_pair][word_id] -= 1
+                delta_pos[new_right_pair][word_id] += 1
+                
+                # delta_pos[old_right_pair][word_id] -= 1
+                # delta_pos[new_right_pair] = delta_pos.setdefault(new_right_pair, {})
+                # delta_pos[new_right_pair][word_id] = delta_pos[new_right_pair].get(word_id, 0) + 1
+        
+        idx += 1
+        if merges_done >= num_occurence:
+            break
+    
+    return ids, local_count_delta, delta_pos
 
 # 1. Create a wrapper class to define custom sorting logic
 class HeapItem:
@@ -174,36 +216,3 @@ class HeapItem:
     def __repr__(self):
         """A nice representation for printing."""
         return f"HeapItem(count={self.count}, pair={self.pair})"
-    
-
-
-# def merge(ids: list[bytes], pair: tuple[bytes, bytes], local_delta: Counter[tuple[bytes, bytes]]) -> tuple[list[bytes], Counter[tuple[bytes, bytes]]]:
-#     A, B = pair[0], pair[1]  # pair is e.g (b'h', b'e')
-#     new_val = A + B  # new_val wil be b'he'
-    
-#     # two pointer in place merge
-#     write = read = 0
-#     while read < len(ids):
-#         if read < len(ids) - 1 and ids[read] == A and ids[read + 1] == B:
-#             # pair found. record the change for this list of ids by removing that pair from the count
-#             local_delta[pair] -= 1
-
-#             # remove pair to the left of found pair
-#             if write > 0:
-#                 local_delta[(ids[write - 1], ids[read])] -= 1
-#                 local_delta[(ids[write - 1], new_val)] += 1
-            
-#             ids[write] = new_val # write new_val into list of bytes
-#             read += 2 # skip the next element
-
-#             if read < len(ids):
-#                 local_delta[(ids[read - 1], ids[read])] -= 1
-#                 local_delta[(new_val, ids[read])] += 1
-#         else:
-#             ids[write] = ids[read]
-#             read += 1
-#         write += 1
-
-#     del ids[write:]
-   
-#     return ids, local_delta
