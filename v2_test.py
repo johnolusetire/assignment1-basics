@@ -1,14 +1,16 @@
-from cs336_basics.bpe import train_bpe
+#from cs336_basics.bpe import train_bpe
+from cs336_basics.bpe_v2_1 import train_bpe
 import time
 
-path = "tests/fixtures/corpus.en"
+#path = "tests/fixtures/corpus.en"
+path = "tests/fixtures/tinystories_sample_5M.txt"
 start_time = time.time()
-vocab, merges = train_bpe(path, 500, ["<|endoftext|>"])
+vocab, merges = train_bpe(path, 1000, ["<|endoftext|>"])
 end_time = time.time()
 print(f"It took {end_time-start_time} to train")
 
 # import pickle
-# save_path = "new8.pkl"
+# save_path = "v2.pkl"
 
 
 # save_data = {
