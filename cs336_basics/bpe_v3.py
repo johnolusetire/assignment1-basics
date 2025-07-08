@@ -3,7 +3,11 @@ from collections import Counter
 import heapq
 import os
 from itertools import pairwise
-from line_profiler import profile
+
+"""
+Refactored BPE implementation that uses a linked list to store the token pairs and their locations.
+Now i can jump directly to the pairs in the linked list when merging, instead of looping through the entire list.
+"""
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
@@ -36,8 +40,7 @@ class HeapItem:
     def __repr__(self):
         """A nice representation for printing."""
         return f"HeapItem(count={self.count}, pair={self.pair})"
-
-@profile    
+   
 def process_corpus(input_path: str | os.PathLike, 
                    special_pattern: str,
                    token_pattern:  str,
@@ -84,8 +87,7 @@ def process_corpus(input_path: str | os.PathLike,
                         prev = curr
     
     return pair_counter, pair_location
-
-@profile                           
+                          
 def merge(pair: tuple[bytes, bytes], 
           token_node: TokenNode,
           delta_counter: Counter[tuple[bytes, bytes]],
@@ -129,7 +131,6 @@ def merge(pair: tuple[bytes, bytes],
 
     return delta_counter, pair_location
 
-@profile
 def train_bpe(input_path: str | os.PathLike,
               vocab_size: int,
               special_tokens: list[str]) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
@@ -218,11 +219,11 @@ def train_bpe(input_path: str | os.PathLike,
 
     return vocab, merges
 
-@profile
-def main():
-    path = "tests/fixtures/tinystories_sample_5M.txt"
-    return train_bpe(input_path=path, vocab_size=1000, special_tokens=["<|endoftext|>"])
 
-if __name__ == "__main__":
-    vocab, merges = main()
+# def main():
+#     path = "tests/fixtures/tinystories_sample_5M.txt"
+#     return train_bpe(input_path=path, vocab_size=1000, special_tokens=["<|endoftext|>"])
+
+# if __name__ == "__main__":
+#     vocab, merges = main()
         
