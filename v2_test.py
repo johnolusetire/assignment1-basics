@@ -1,5 +1,5 @@
 #from cs336_basics.bpe import train_bpe
-from cs336_basics.bpe_v2_1 import train_bpe
+from cs336_basics.bpe_v6 import train_bpe
 import time
 
 #path = "tests/fixtures/corpus.en"
