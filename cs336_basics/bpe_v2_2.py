@@ -12,6 +12,7 @@ def train_bpe(input_path: str | os.PathLike,
     
     """
     In this version, i just keep track of the list locations for each pair. so i know what pairs to jump directly to when merging. 
+    pair_positions is now just a dictionary, mapping each pair to a set of word_ids where that pair occurs.
     """
     
     # vocab: dict[int, bytes] = {idx : bytes([idx]) for idx in range(256)} #initial vocab

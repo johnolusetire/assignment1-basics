@@ -86,6 +86,9 @@ def train_bpe(input_path: str | os.PathLike,
                         pair_positions[pair][word_id] += 1
                         # pair_positions[pair] = pair_positions.setdefault(pair, {})
                         # pair_positions[pair][word_id] = pair_positions[pair].get(word_id, 0) + 1
+                if verbose:
+                    if len(words) % 10000 == 0:
+                        print(f"Processed {len(words)} words so far...")
 
     if verbose:
         print(f"Finished pretokenization stage")
@@ -95,6 +98,7 @@ def train_bpe(input_path: str | os.PathLike,
             print(f"Processed {len(words)} words")
         
         print(f"Found {len(pair_counts)} unique pairs")
+        print("-"*50)
         print(f"Starting heap build stage...")
         
 
@@ -108,6 +112,7 @@ def train_bpe(input_path: str | os.PathLike,
     if verbose:
         print(f"Finished heap build stage")
         print(f"Starting merge stage...")
+        print("-"*50)
         start_time = time.time()
         mid_time = time.time()
 
@@ -171,8 +176,10 @@ def train_bpe(input_path: str | os.PathLike,
                 mid_time = time.time()
 
     if verbose and start_time is not None:
+        print("-"*50)
         print(f"Finished merge stage")
         print(f"Completed {i}/{num_merges} merges in {time.time() - start_time:.2f} seconds")
+        
 
 
     for special in special_tokens:
