@@ -4,9 +4,12 @@ from collections import Counter, defaultdict
 import heapq
 import os
 from itertools import pairwise
+import psutil, sys
+from memory_profiler import profile
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
+@profile
 def train_bpe(input_path: str | os.PathLike,
               vocab_size: int,
               special_tokens: list[str], block_size: int = 64, verbose: bool = False) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
@@ -23,6 +26,10 @@ def train_bpe(input_path: str | os.PathLike,
 
     Downside: The heap is still polluted with stale pairs.
     """
+    process = psutil.Process(os.getpid())
+    if verbose:        
+        initial_memory = process.memory_info().rss / 1024 / 1024
+        print(f"Initial memory usage: {initial_memory:.2f} MB")
     
     # vocab: dict[int, bytes] = {idx : bytes([idx]) for idx in range(256)} #initial vocab
     vocab = {idx : bytes([idx]) for idx in range(256)}
@@ -98,18 +105,32 @@ def train_bpe(input_path: str | os.PathLike,
             print(f"Processed {len(words)} words")
         
         print(f"Found {len(pair_counts)} unique pairs")
+        current_memory = process.memory_info().rss / 1024 / 1024
+        print(f"Memory after pretokenization: {current_memory:.2f} MB")
         print("-"*50)
         print(f"Starting heap build stage...")
-        
 
+        
     # use a priority queue/heap to keep track of maximum pairs instead of using the max function
     # first build the initial heap
     count_heap = []
     for pair, count in pair_counts.items():
         heapq.heappush(count_heap, HeapItem(count, pair))
     
+    if verbose:
+        MB = 1024 * 1024
+        print("Initial Memory usage breakdown:")
+        print(f"Size of pair_counts: {deep_getsizeof(pair_counts) / MB:.2f} MB")
+        print(f"Size of pair_positions: {deep_getsizeof(pair_positions) / MB:.2f} MB")
+        print(f"Size of words: {deep_getsizeof(words) / MB:.2f} MB")
+        print(f"Size of count_heap: {deep_getsizeof(count_heap) / MB:.2f} MB")
+        print("-"*50)
+
     mid_time = None
     if verbose:
+        current_memory = process.memory_info().rss / 1024 / 1024
+        print(f"Memory at merge start: {current_memory:.2f} MB")
+        print(f"Heap size: {len(count_heap)}")
         print(f"Finished heap build stage")
         print(f"Starting merge stage...")
         print("-"*50)
@@ -173,14 +194,32 @@ def train_bpe(input_path: str | os.PathLike,
         if verbose:
             if i % 100 == 0 and mid_time is not None:
                 print(f"Completed {i}/{num_merges} merges in {time.time() - mid_time:.2f} seconds")
+                current_memory = process.memory_info().rss / 1024 / 1024
+                print(f"Memory at merge {i}: {current_memory:.2f} MB")
+                print(f"Heap size: {len(count_heap)}")
                 mid_time = time.time()
+                print("-"*50)
 
     if verbose and start_time is not None:
         print("-"*50)
         print(f"Finished merge stage")
         print(f"Completed {i}/{num_merges} merges in {time.time() - start_time:.2f} seconds")
-        
+        current_memory = process.memory_info().rss / 1024 / 1024
+        print(f"Memory at merge end: {current_memory:.2f} MB")
+        print("-"*50)
+        print(f"Final heap size: {len(count_heap)}")
+        print(f"Words loaded: {len(words)}")
+        print(f"Unique pairs: {len(pair_counts)}")
+        print(f"Pair positions entries: {sum(len(counter) for counter in pair_positions.values())}")
+        print("-"*50)
 
+        MB = 1024 * 1024
+        print(f"Final Memory usage breakdown:")
+        print(f"Size of pair_counts: {deep_getsizeof(pair_counts) / MB:.2f} MB")
+        print(f"Size of pair_positions: {deep_getsizeof(pair_positions) / MB:.2f} MB")
+        print(f"Size of words: {deep_getsizeof(words) / MB:.2f} MB")
+        print(f"Size of count_heap: {deep_getsizeof(count_heap) / MB:.2f} MB")
+        print("-"*50)
 
     for special in special_tokens:
         if len(vocab) >= vocab_size:
@@ -273,3 +312,35 @@ class HeapItem:
     def __repr__(self):
         """A nice representation for printing."""
         return f"HeapItem(count={self.count}, pair={self.pair})"
+
+# Helper function to calculate deep size of an object
+def deep_getsizeof(o, ids=None):
+    """
+    Find the memory footprint of a Python object.
+    This is a recursive function that drills down a Python object graph
+    to determine the total memory usage of the object and all of its contents.
+    """
+    if ids is None:
+        ids = set()
+    d = deep_getsizeof
+    if id(o) in ids:
+        return 0
+
+    r = sys.getsizeof(o)
+    ids.add(id(o))
+
+    if isinstance(o, (str, bytes)):
+        return r
+
+    if isinstance(o, dict):
+        r += sum(d(k, ids) + d(v, ids) for k, v in o.items())
+    elif hasattr(o, '__iter__') and not isinstance(o, (str, bytes)):
+        r += sum(d(x, ids) for x in o)
+    
+    return r
+
+if __name__ == "__main__":
+    _, _ = train_bpe(input_path="tests/fixtures/tinystories_sample_5M.txt",
+            vocab_size=1000,
+            special_tokens=["<|endoftext|>"],
+            verbose=False)
