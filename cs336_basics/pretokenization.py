@@ -4,6 +4,7 @@ from typing import BinaryIO
 from collections import defaultdict, Counter
 from itertools import pairwise
 import multiprocessing
+import time
 
 def find_chunk_boundaries(file: BinaryIO, 
                           desired_num_chunks: int, 
@@ -87,6 +88,10 @@ def _pretokenize_worker(file_path: str, start: int, size: int, split_pattern, to
         chunk = f.read(size).decode(encoding="utf-8", errors="ignore")
     return _process_chunk(chunk, split_pattern, token_pattern)
 
+def time_bench(start_time, bench_name: str):
+    """Prints the time taken for a benchmark."""
+    end_time = time.time()
+    print(f"{bench_name} took {end_time - start_time:.2f} seconds")
 
 def pretokenize_text(file_path: str,
                      token_pattern: str,
@@ -98,6 +103,9 @@ def pretokenize_text(file_path: str,
     global_pair_counts: dict[tuple[bytes, bytes], int] = Counter()
     global_pair_positions: dict[tuple[bytes, bytes], dict[int, int]] = defaultdict(Counter) # map of pair -> Counter(index for word, num_occurences)
     
+    if mode == "multi":
+        num_processes = os.cpu_count()
+
     # pre tokenization split pattern
     token_pat = re.compile(pattern=token_pattern)
 
@@ -110,9 +118,8 @@ def pretokenize_text(file_path: str,
         chunk_sizes = [end - start for start, end in pairwise(boundaries)]
 
     if mode == "sequential":
-        with open(file_path, 'rb') as file:
-            start = time.time()
-
+        start_time = time.time()
+        with open(file_path, 'rb') as file:          
             for start, chunk_size in zip(boundaries[:-1], chunk_sizes):
                 file.seek(start)
                 # read the chunk of data from the file
@@ -124,25 +131,18 @@ def pretokenize_text(file_path: str,
                                             pair_counts=global_pair_counts,
                                             pair_positions=global_pair_positions)
 
-            time_bench(start, "sequential pretokenization")
+        time_bench(start_time, "sequential pretokenization")
         return word_list, global_pair_counts, global_pair_positions
     
     elif mode == "multi":
-        chunks = []
-        with open(file_path, 'rb') as file:
-            for start, chunk_size in zip(boundaries[:-1], chunk_sizes):
-                file.seek(start)
-                chunks.append(file.read(chunk_size).decode(encoding="utf-8", errors="ignore"))
-        tasks_args = [(chunk, special_pat, token_pat) for chunk in chunks]
-        #tasks_args = [(file_path, start, chunk_size, special_pat, token_pat) for start, chunk_size in zip(boundaries[:-1], chunk_sizes)]
+        tasks_args = [(file_path, start, chunk_size, special_pat, token_pat) for start, chunk_size in zip(boundaries[:-1], chunk_sizes)]
+        print("Start")
         start = time.time()
         with multiprocessing.Pool(processes=num_processes) as pool:
-            #results = pool.starmap(_pretokenize_worker, tasks_args)
-            results = pool.starmap(_process_chunk, tasks_args)
-
-
+            results = pool.starmap(_pretokenize_worker, tasks_args)
+        
         time_bench(start, "multi pretokenization map")
-        start = time.time()
+        start_time = time.time()
         for word_ids, local_pair_counts, local_pair_positions in results:
             cur_sz = len(word_list)
             word_list.extend(word_ids)
@@ -152,13 +152,9 @@ def pretokenize_text(file_path: str,
             for pair, count_object in local_pair_positions.items():
                 for location_id, num_occurences in count_object.items():
                     global_pair_positions[pair][location_id + cur_sz] = num_occurences
-        time_bench(start, "multi update global counts")
+        time_bench(start_time, "multi update global counts")
         return word_list, global_pair_counts, global_pair_positions
     else:
         raise ValueError(f"Unknown mode: {mode}. Use 'sequential' or 'multi'.")
 
-import time
-def time_bench(start_time, bench_name: str):
-    """Prints the time taken for a benchmark."""
-    end_time = time.time()
-    print(f"{bench_name} took {end_time - start_time:.2f} seconds")
+
