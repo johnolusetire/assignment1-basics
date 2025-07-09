@@ -2,7 +2,9 @@ import psutil
 import os
 import time
 from cs336_basics.bpe_v2_main import train_bpe
+from memory_profiler import profile
 
+@profile
 def benchmark_memory():
     process = psutil.Process(os.getpid())
     
@@ -15,10 +17,10 @@ def benchmark_memory():
     
     try:
         vocab, merges = train_bpe(
-            input_path="data/TinyStoriesV2-GPT4-valid.txt",
-            vocab_size=10000,
+            input_path="tests/fixtures/corpus.en",
+            vocab_size=500,
             special_tokens=["<|endoftext|>"],
-            ##verbose=False
+            verbose=False
         )
         
         # Peak memory usage
