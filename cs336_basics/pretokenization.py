@@ -1,4 +1,6 @@
+from ast import pattern
 import os
+from numpy import size
 import regex as re
 from typing import BinaryIO
 from collections import defaultdict, Counter
@@ -28,7 +30,7 @@ def find_chunk_boundaries(file: BinaryIO,
     mini_chunk_size = 4096
 
     for bound_pointer in range(1, len(chunk_boundaries) - 1):
-        initial_position = bound_pointer
+        initial_position = chunk_boundaries[bound_pointer]
         file.seek(initial_position) # start at a boundary guess        
 
         while True:
@@ -48,113 +50,80 @@ def find_chunk_boundaries(file: BinaryIO,
     return sorted(set(chunk_boundaries)) # make sure chunk boundaries has unique pointers
  
 def _process_chunk(chunk: str,
-                    split_pattern,
-                    token_pattern,
-                    words: list | None = None,
-                    pair_counts: dict[tuple[bytes, bytes], int] | None = None,
-                    pair_positions: dict[tuple[bytes, bytes], dict[int, int]] | None = None):
+                   split_pattern: re.Pattern,
+                   token_pattern: re.Pattern,
+                   word_count: Counter[tuple[int, ...]] | None = None) -> Counter[tuple[int, ...]]:
     
     """Processes a string chunk and returns tokenization results."""
-    
-    if words is None or pair_counts is None or pair_positions is None:
-        # Initialize if not provided
-        words = []
-        pair_counts = Counter()
-        pair_positions = defaultdict(Counter)
+    if word_count is None:
+        word_count = Counter()
 
     parts = re.split(split_pattern, chunk) # split data into parts using special_tokens as a delimiter
        
-    # parts is a list of the split sections. 
-    # iterate through each doc
+    # parts is a list of the split sections. iterate through each doc
     for doc in parts:
-        # iterate through every match found using the pretokenization pattern
-        for match in re.finditer(pattern=token_pattern, string=doc):
-            # prev_id = None
-            ids = [bytes([b]) for b in match.group().encode("utf-8")]  # list of bytes in the encoded token 'hello' -> [b'h',b'e',b'l',b'l',b'o']
-            words.append(ids)  # append each list of bytes (ids) to the words list. the words list holds all the splits from the regex pattern
-            
-            word_id = len(words) - 1
-            
-            for pair in pairwise(ids):
-                pair_counts[pair] += 1
-                pair_positions[pair][word_id] += 1
+        if not doc:
+            continue
+        for match in token_pattern.finditer(string=doc):
+            word = tuple(match.group().encode("utf-8", errors="ignore"))  # get the matched token
+            word_count[word] += 1  # count the number of times a token appears in the corpus
     
-    return words, pair_counts, pair_positions
+    return word_count
 
-def _pretokenize_worker(file_path: str, start: int, size: int, split_pattern, token_pattern):
+def _pretokenize_worker(file_path: str, start: int, size: int, split_pattern: re.Pattern, token_pattern: re.Pattern):
     """Worker for multiprocessing: opens file, reads chunk, and processes it."""
     with open(file_path, 'rb') as f:
         f.seek(start)
         chunk = f.read(size).decode(encoding="utf-8", errors="ignore")
     return _process_chunk(chunk, split_pattern, token_pattern)
 
-def time_bench(start_time, bench_name: str):
-    """Prints the time taken for a benchmark."""
-    end_time = time.time()
-    print(f"{bench_name} took {end_time - start_time:.2f} seconds")
-
-def pretokenize_text(file_path: str,
+def pretokenize_text(file_path: str | os.PathLike,
                      token_pattern: str,
                      special_tokens: list[str] = ["<|endoftext|>"],
                      mode: str = "sequential",
-                     num_processes: int = 8) -> tuple[list[int], dict[tuple[bytes, bytes], int], dict[tuple[bytes, bytes], dict[int, int]]]:
+                     num_processes: int = 8) -> tuple[Counter, Counter, dict]:
         
-    word_list: list[int] = []
-    global_pair_counts: dict[tuple[bytes, bytes], int] = Counter()
-    global_pair_positions: dict[tuple[bytes, bytes], dict[int, int]] = defaultdict(Counter) # map of pair -> Counter(index for word, num_occurences)
+    global_word_count = Counter()
+    pair_counts = Counter()
+    pair_to_word = defaultdict(list)
     
     if mode == "multi":
-        num_processes = os.cpu_count()
+        num_processes = min(num_processes, len(os.sched_getaffinity(0)))  # better than .cpu_count() for cluster envs
+        print(num_processes)
 
     # pre tokenization split pattern
     token_pat = re.compile(pattern=token_pattern)
-
     # split corpus on special tokens
     special_pat = "|".join(map(re.escape, special_tokens))
-    
-    
-    with open(file_path, 'rb') as file:
-        boundaries = find_chunk_boundaries(file, num_processes, special_tokens[-1].encode())
-        chunk_sizes = [end - start for start, end in pairwise(boundaries)]
+    special_pat = re.compile(special_pat)
 
+    with open(file_path, 'rb') as file:
+        boundaries = find_chunk_boundaries(file, num_processes, "<|endoftext|>".encode("utf-8"))
+        chunk_sizes = [end - start for start, end in pairwise(boundaries)]
+    
     if mode == "sequential":
-        start_time = time.time()
-        with open(file_path, 'rb') as file:          
+        with open(file_path, "rb") as file:
             for start, chunk_size in zip(boundaries[:-1], chunk_sizes):
                 file.seek(start)
-                # read the chunk of data from the file
                 chunk = file.read(chunk_size).decode(encoding="utf-8", errors="ignore")
-                _, _, _ =   _process_chunk(chunk=chunk,
-                                            split_pattern=special_pat,
-                                            token_pattern=token_pat,
-                                            words=word_list,
-                                            pair_counts=global_pair_counts,
-                                            pair_positions=global_pair_positions)
-
-        time_bench(start_time, "sequential pretokenization")
-        return word_list, global_pair_counts, global_pair_positions
-    
-    elif mode == "multi":
+                global_word_count = _process_chunk(chunk=chunk, split_pattern=special_pat, token_pattern=token_pat, word_count=global_word_count)
+       
+    elif mode == "multi":        
         tasks_args = [(file_path, start, chunk_size, special_pat, token_pat) for start, chunk_size in zip(boundaries[:-1], chunk_sizes)]
-        print("Start")
-        start = time.time()
+        print(len(tasks_args))
+
         with multiprocessing.Pool(processes=num_processes) as pool:
-            results = pool.starmap(_pretokenize_worker, tasks_args)
-        
-        time_bench(start, "multi pretokenization map")
-        start_time = time.time()
-        for word_ids, local_pair_counts, local_pair_positions in results:
-            cur_sz = len(word_list)
-            word_list.extend(word_ids)
-
-            global_pair_counts.update(local_pair_counts)
-
-            for pair, count_object in local_pair_positions.items():
-                for location_id, num_occurences in count_object.items():
-                    global_pair_positions[pair][location_id + cur_sz] = num_occurences
-        time_bench(start_time, "multi update global counts")
-        return word_list, global_pair_counts, global_pair_positions
+            dict_results = pool.starmap(_pretokenize_worker, tasks_args)
+                        
+        for word_counter in dict_results:
+            global_word_count.update(word_counter)
+    
     else:
         raise ValueError(f"Unknown mode: {mode}. Use 'sequential' or 'multi'.")
 
-
+    for word, count in global_word_count.items():
+        for pair in pairwise(word):
+            pair_counts[pair] += count
+            pair_to_word[pair].append(word)
+    
+    return global_word_count, pair_counts, pair_to_word
