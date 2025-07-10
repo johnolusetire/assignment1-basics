@@ -95,7 +95,7 @@ def train_bpe(input_path: str | os.PathLike,
         vocab[new_id] = b"".join(max_pair)
         merges.append(max_pair)
 
-        #print(f"merge {i+1}/{num_merges}: {max_pair} -> {vocab[new_id]} index {new_id} had {max_count} occurrences")
+        print(f"merge {i+1}/{num_merges}: {max_pair} -> {vocab[new_id]} index {new_id} had {max_count} occurrences")
         
         # a dictionary/counter to hold the changes made to pair counts during the merge. 
         # This will be used to update the heap and the pair_counts counter 

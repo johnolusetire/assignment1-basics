@@ -10,6 +10,7 @@ from typing import Dict, List, Tuple
 from collections.abc import Iterable, Iterator
 from heapq import heappush, heappop
 import numpy as np
+import time
 
 
 
@@ -76,16 +77,22 @@ class BPETrainer:
 
     def _pretokenize_parallel(self, data_path: str):
         num_processes = os.cpu_count()
+        print(f"using {num_processes} cpus")
         splitter_pattern = self.splitter_pattern
 
         with open(data_path, "rb") as f:
             boundaries = find_chunk_boundaries(f, num_processes, "<|endoftext|>".encode("utf-8"))
 
         jobs = [(data_path, start, end, splitter_pattern, self.special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:])]
-
+        
+        print(f"using {len(jobs)} jobs")
+        print("starting parallel")
+        start_time = time.time()
+        
         with Pool(processes=num_processes) as pool:
             list_of_dicts = pool.starmap(process_chunk, jobs)
-
+        
+        print(f"parallel done in {time.time() - start_time:.2f} seconds")
         word_counts = defaultdict(int)
         for local_dict in list_of_dicts:
             for word, count in local_dict.items():
@@ -149,10 +156,10 @@ class BPETrainer:
 
 
     def _update_stats(self, old_word, new_word, count):
-        self.word_counts[new_word] += count
-        self.word_counts[old_word] -= count
-        if self.word_counts[old_word] == 0:
-            del self.word_counts[old_word]
+        self.word_counts[new_word] += self.word_counts[old_word]
+        #self.word_counts[old_word] -= count
+        #if self.word_counts[old_word] == 0:
+        del self.word_counts[old_word]
 
 
         for p1, p2 in pairwise(old_word):
@@ -187,7 +194,6 @@ class BPETrainer:
 
             best_pair = self._heap_best_pair()
 
-
             if self.pair_counts[best_pair] == 0:
                 break    
 
@@ -197,6 +203,9 @@ class BPETrainer:
             new_idx = len(self.vocab)
             self.vocab[new_idx] = p1 + p2
             affected_words = self.pair_to_words[best_pair].copy()
+
+            if verbose:
+                print(f"merge {len(self.vocab)}/{vocab_size}: {best_pair} -> {self.vocab[new_idx]} index {new_idx} had {self.pair_counts.get(best_pair, 0)} occurrences")
 
             for word in affected_words:
                 if word not in self.word_counts:
