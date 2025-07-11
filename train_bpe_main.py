@@ -13,7 +13,7 @@ def main():
     args.add_argument("--mode", type=str, default="multi", choices=["sequential", "multi"], help="Mode of BPE training: 'sequential' for single token, 'multi' for multiple tokens")
     args.add_argument("--special_tokens", type=str, nargs="+", default=["<|endoftext|>"], help="List of special tokens to be added to the vocabulary")
     args.add_argument("--verbose", action="store_true", help="Enable verbose output for debugging")
-    args.add_argument("--output_file", type=str, default="tiny_stories_vocab.pkl", help="Directory to save the output vocabulary and merges")
+    args.add_argument("--output_file", type=str, default="tiny_stories", help="Directory to save the output vocabulary and merges")
 
     args = args.parse_args()
     path = args.path
@@ -32,11 +32,17 @@ def main():
     if not os.path.exists(result_dir):
         os.makedirs(result_dir)
 
-    vocab_path = os.path.join(result_dir, args.output_file)    
-    print(f"Saving training data to {vocab_path}")
+    vocab_path = os.path.join(result_dir, args.output_file + "_vocab.pkl")    
+    print(f"Saving vocab to {vocab_path}")
 
     with open(vocab_path, "wb") as f:
-        pickle.dump({"vocab": vocab, "merges": merges}, f, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(vocab, f, protocol=pickle.HIGHEST_PROTOCOL)
+    
+    merge_path = os.path.join(result_dir, args.output_file + "_merge.pkl")    
+    print(f"Saving vocab to {merge_path}")
+
+    with open(merge_path, "wb") as f:
+        pickle.dump(merges, f, protocol=pickle.HIGHEST_PROTOCOL)
     
     print(f"Vocab length: {len(vocab)}")
     print(f"Merge length: {len(merges)}")

@@ -1,6 +1,6 @@
-from collections import Counter, defaultdict
+from collections import Counter
 from heapq import heappop, heappush
-import os
+import os, time
 from itertools import pairwise
 from cs336_basics.pretokenization import pretokenize_text
 
@@ -97,7 +97,16 @@ def train_bpe(input_path: str | os.PathLike,
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"File not found at {input_path}")
     
+    if verbose:
+        print(f"Starting pretokenization")
+        start_time = time.time()    
     word_count, pair_counts, pair_to_word = pretokenize_text(file_path=input_path, token_pattern=PAT, special_tokens=special_tokens, mode=mode)
+
+    if verbose:
+        print(f"Pretokenization done. It took {time.time()- start_time:.2f} seconds")
+        print("-"*100) 
+        print(f"Unique words: {len(word_count)}, Unique pairs: {len(pair_counts)}")
+        print("-"*100) 
 
     # use a priority queue/heap to keep track of maximum pairs instead of using the max function
     # first build the initial heap
@@ -106,6 +115,9 @@ def train_bpe(input_path: str | os.PathLike,
         lex_pair = (vocab[pair[0]], vocab[pair[1]])
         heappush(count_heap, HeapItem(count, lex_pair, pair))    
 
+    if verbose:
+        print("Heap stage done")
+        print("-"*100)
     # get num of merges
     num_merges = vocab_size - 256 - len(special_tokens)
     i = 0
@@ -131,7 +143,10 @@ def train_bpe(input_path: str | os.PathLike,
         merges.append((vocab[pair_0], vocab[pair_1]))
 
         if verbose:
-            print(f"merge {i+1}/{num_merges}: {max_pair} -> {vocab[new_rank]} index {new_rank} had {max_count} occurrences")
+            if i % 300 == 0:
+                print(f"merge {i+1}/{num_merges}: {max_pair} -> {vocab[new_rank]} index {new_rank} had {max_count} occurrences")
+                print(f"Unique words: {len(word_count)}, Unique pairs: {len(pair_counts)}, Heap size: {len(count_heap)}")
+                print("-"*100)
         
         # a dictionary/counter to hold the changes made to pair counts during the merge. 
         # This will be used to update the heap and the pair_counts counter 
