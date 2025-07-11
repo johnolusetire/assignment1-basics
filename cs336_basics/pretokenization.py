@@ -88,8 +88,7 @@ def pretokenize_text(file_path: str | os.PathLike,
     pair_to_word = defaultdict(list)
     
     if mode == "multi":
-        num_processes = min(num_processes, len(os.sched_getaffinity(0)))  # better than .cpu_count() for cluster envs
-        print(num_processes)
+        num_processes = max(num_processes, len(os.sched_getaffinity(0)))  # better than .cpu_count() for cluster envs
 
     # pre tokenization split pattern
     token_pat = re.compile(pattern=token_pattern)
@@ -110,11 +109,10 @@ def pretokenize_text(file_path: str | os.PathLike,
        
     elif mode == "multi":        
         tasks_args = [(file_path, start, chunk_size, special_pat, token_pat) for start, chunk_size in zip(boundaries[:-1], chunk_sizes)]
-        print(len(tasks_args))
 
         with multiprocessing.Pool(processes=num_processes) as pool:
             dict_results = pool.starmap(_pretokenize_worker, tasks_args)
-                        
+                      
         for word_counter in dict_results:
             global_word_count.update(word_counter)
     

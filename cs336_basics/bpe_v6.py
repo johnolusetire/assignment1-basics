@@ -110,6 +110,11 @@ def train_bpe(input_path: str | os.PathLike,
     num_merges = vocab_size - 256 - len(special_tokens)
     i = 0
 
+    for special in special_tokens:
+        if len(vocab) >= vocab_size:
+            break
+        vocab[len(vocab)] = special.encode("utf-8")
+        
     while i < num_merges:       
         # # pop from the heap until the popped pair maatches the updated count
         while True:
@@ -162,10 +167,10 @@ def train_bpe(input_path: str | os.PathLike,
         i += 1
 
 
-    for special in special_tokens:
-        if len(vocab) >= vocab_size:
-            break
-        vocab[len(vocab)] = special.encode("utf-8")
+    # for special in special_tokens:
+    #     if len(vocab) >= vocab_size:
+    #         break
+    #     vocab[len(vocab)] = special.encode("utf-8")
 
     return vocab, merges
 
