@@ -32,39 +32,37 @@ def tokenize_to_file(file_path: str, tokenizer: Tokenizer, save_path: str, *, fl
 def main():
     special_tokens = ["<|endoftext|>"]
 
-    # Tokenize tinystories file
+    # Tokenize OpenWebText file  
     print("="*50)
-    print("TOKENIZING TINY STORIES")
+    print("TOKENIZING OPEN WEB TEXT")
     print("="*50)
+    
+    vocab_owt = "results/owt/owt_train_vocab.pkl"
+    merges_owt = "results/owt/owt_train_merge.pkl"
 
-    # Tokenize tinystories file
-    tn_filepath = "data/TinyStoriesV2-GPT4-train.txt"
-    tn_valid_filepath = "data/TinyStoriesV2-GPT4-valid.txt"
-    vocab_tn = "results/tiny_stories/tiny_stories_vocab.pkl"
-    merges_tn = "results/tiny_stories/tiny_stories_merges.pkl"
-    tokenizer = Tokenizer.from_files(vocab_filepath=vocab_tn,
-                                     merge_filepath=merges_tn,
-                                     special_tokens=special_tokens)
+    tokenizer_owt = Tokenizer.from_files(vocab_filepath=vocab_owt,
+                                        merge_filepath=merges_owt,
+                                        special_tokens=special_tokens)
     
-    output_file = "results/tiny_stories_train_tokens.bin"
-    print(f"Starting tokenization of tiny stories")
+    owt_filepath = "data/owt_train.txt"
+    output_file = "results/open_web_text_train_tokens.bin"
+    print(f"Starting tokenization of Open web text train set")
     start_time = time.time()
-    total_tokens_tn = tokenize_to_file(tn_filepath, tokenizer, output_file)
-    elapsed_tn = time.time() - start_time
-    
-    print(f"Tiny Stories Train set completed in {elapsed_tn:.2f} seconds")
+    total_tokens_owt = tokenize_to_file(owt_filepath, tokenizer_owt, output_file)
+    elapsed_owt = time.time() - start_time
+    print(f"OpenWebText train set completed in {elapsed_owt:.2f} seconds")
     print(f"Output saved to: {output_file}")
-    print(f"Throughput: {total_tokens_tn/elapsed_tn:,.0f} tokens/second")
+    print(f"Throughput: {total_tokens_owt/elapsed_owt:,.0f} tokens/second")
 
-    output_file = "results/tiny_stories_valid_tokens.bin"
-    print(f"Starting tokenization of tiny stories validation")
+    owt_valid_filepath = "data/owt_valid.txt"
+    output_file = "results/open_web_text_valid_tokens.bin"
+    print(f"Starting tokenization of Open web text validation")
     start_time = time.time()
-    total_tokens_tn = tokenize_to_file(tn_valid_filepath, tokenizer, output_file)
-    elapsed_tn = time.time() - start_time
-    
-    print(f"Tiny Stories Validation set completed in {elapsed_tn:.2f} seconds")
+    total_tokens_owt = tokenize_to_file(owt_valid_filepath, tokenizer_owt, output_file)
+    elapsed_owt = time.time() - start_time
+    print(f"OpenWebText val set completed in {elapsed_owt:.2f} seconds")
     print(f"Output saved to: {output_file}")
-    print(f"Throughput: {total_tokens_tn/elapsed_tn:,.0f} tokens/second")
+    print(f"Throughput: {total_tokens_owt/elapsed_owt:,.0f} tokens/second")
 
 if __name__ == "__main__":
     main()
