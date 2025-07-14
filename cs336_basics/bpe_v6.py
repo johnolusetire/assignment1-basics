@@ -143,7 +143,7 @@ def train_bpe(input_path: str | os.PathLike,
         merges.append((vocab[pair_0], vocab[pair_1]))
 
         if verbose:
-            if i % 300 == 0:
+            if new_rank % 1000 == 0:
                 print(f"merge {i+1}/{num_merges}: {max_pair} -> {vocab[new_rank]} index {new_rank} had {max_count} occurrences")
                 print(f"Unique words: {len(word_count)}, Unique pairs: {len(pair_counts)}, Heap size: {len(count_heap)}")
                 print("-"*100)

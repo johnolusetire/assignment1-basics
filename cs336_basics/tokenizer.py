@@ -1,23 +1,24 @@
-import token
 from typing import Iterable, Iterator
 import pickle
 import os
 import regex as re
-from itertools import islice
+from itertools import islice, pairwise
 
 class Tokenizer:
     def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str] | None=None):
         self.vocab = vocab
         self.inv_vocab = {tok:idx for idx, tok in self.vocab.items()}
         self._validate_byte_coverage()
-        self.merges = merges        
+        self.merges: list[tuple[bytes, bytes]] = merges
+        self.inv_merges = {self.merges[i]: i for i in range(len(self.merges))}        
         self.pretok_pattern = re.compile(r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""")
         self._cache: dict[bytes, list[int]] = {}
         if special_tokens is not None:
             self.special_tokens = self._add_special_tokens(special_tokens)
-            self.special_pattern = re.compile("|".join(map(re.escape, self.special_tokens.keys())))
+            sorted_tokens = sorted(self.special_tokens.keys(), key=len, reverse=True)
+            self.special_pattern = re.compile(f"({"|".join(map(re.escape, sorted_tokens))})")
         else:
-            self.special_tokens = None
+            self.special_tokens = {}
             self.special_pattern = None
     
     @classmethod
@@ -32,8 +33,8 @@ class Tokenizer:
             raise TypeError("Vocab must be a dict and merges must be a list")    
         return cls(vocab, merges, special_tokens)
     
-    @classmethod
-    def load_vocab(cls, vocab_filepath: str):
+    @staticmethod
+    def load_vocab(vocab_filepath: str):
         if not os.path.exists(vocab_filepath):
             raise FileNotFoundError(f"Vocab file not found at path {vocab_filepath}")
         try:
@@ -43,8 +44,8 @@ class Tokenizer:
             raise RuntimeError(f"Failed to unpickle vocab: {e}")
         return vocab
 
-    @classmethod
-    def load_merges(cls, merge_filepath: str):
+    @staticmethod
+    def load_merges(merge_filepath: str):
         if not os.path.exists(merge_filepath):
             raise FileNotFoundError(f"Vocab file not found at path {merge_filepath}")
         try:
@@ -74,36 +75,25 @@ class Tokenizer:
         return temp
 
     def encode(self, text: str) -> list[int]:
-        ids: list[int] = []
-        special_token = None
-        start = 0
-        while start < len(text):
-            if self.special_pattern is not None:
-                special_token = self.special_pattern.search(text[start:])
-            
-            end = len(text) if special_token is None else special_token.span()[0] + start
+        ids: list[int] = []       
+        parts = [text] if self.special_pattern is None else self.special_pattern.splititer(text)
 
-            parts = self.pretok_pattern.finditer(text[start:end])
-
-            for match in parts:
-                token = match.group().encode("utf-8", errors="replace")
-                if token in self.inv_vocab:
-                    # check if the token is already in the vocab. case for completely merged words and special tokens
-                    ids.append(self.inv_vocab[token])
-                elif token in self._cache:
-                    # check if that particular string is in the cache
-                    ids.extend(self._cache[token])
-                else:
-                    # if it is a new token, then we apply merges on its bytes characters to get the token sequence
-                    merged_ids = self._apply_merge(token)
-                    ids.extend(merged_ids)
-            
-            if special_token is not None:
-                ids.append(self.inv_vocab[special_token.group().encode("utf-8", errors="replace")]) # get the id for the special token
-                start += special_token.span()[-1]
+        for match in parts:
+            if match in self.special_tokens:
+                ids.append(self.inv_vocab[match.encode("utf-8")])
             else:
-                start += end
-        
+                for token in self.pretok_pattern.finditer(match):
+                    token = token.group().encode("utf-8")
+                    if token in self.inv_vocab:
+                        # check if the token is already in the vocab. case for completely merged words and special tokens
+                        ids.append(self.inv_vocab[token])
+                    elif token in self._cache:
+                        # check if that particular string is in the cache
+                        ids.extend(self._cache[token])
+                    else:
+                        # if it is a new token, then we apply merges on its bytes characters to get the token sequence
+                        merged_ids = self._apply_merge(token)
+                        ids.extend(merged_ids)
         return ids       
 
     
@@ -136,19 +126,24 @@ class Tokenizer:
         return b"".join([self.vocab[id] for id in ids]).decode("utf-8", errors="replace")
 
     def _apply_merge(self, token: bytes) -> list[int]:
-        toks = [bytes([b]) for b in token]        
+        toks = [bytes([b]) for b in token]      
 
-        for merge in self.merges:
-            i, j = 0, len(toks)
-            merged_toks = []
-            while (i < j):
-                if i < j - 1 and toks[i] == merge[0] and toks[i + 1] == merge[1]:
-                    merged_toks.append(merge[0] + merge[1])
-                    i += 2
-                else:
-                    merged_toks.append(toks[i])
-                    i += 1
-            toks = merged_toks
+        while len(toks) > 1:
+            idx = pair_idx = 0
+            min_idx = float("inf")
+
+            for pair in pairwise(toks):
+                merge_idx = self.inv_merges.get(pair, float("inf"))
+                if merge_idx < min_idx:
+                    pair_idx = idx
+                    min_idx = merge_idx
+                idx += 1
+                        
+            if min_idx == float("inf"):
+                break
+
+            merged_pair = toks[pair_idx] + toks[pair_idx + 1]
+            toks = toks[:pair_idx] + [merged_pair] + toks[pair_idx + 2:]
             
         result = [self.inv_vocab[tok] for tok in toks]
         self._cache[token] = result
