@@ -40,6 +40,14 @@ def process_chunk(path: str, start: int, end: int, splitter_pattern: re.Pattern,
             
     return local_word_counts
 
+def process_chunk_simple_progress(data_path, start, end, splitter_pattern, special_tokens, chunk_id, total_chunks):
+    print(f"[Chunk {chunk_id+1}/{total_chunks}] Processing {(end-start)//(1024*1024)}MB...")
+    
+    result = process_chunk(data_path, start, end, splitter_pattern, special_tokens)
+    
+    print(f"[Chunk {chunk_id+1}/{total_chunks}] COMPLETED")
+    return result
+
 class BPETrainer:
 
     def __init__(self):
@@ -76,23 +84,22 @@ class BPETrainer:
                 f.write(f"{t1} {t2}\n")
 
     def _pretokenize_parallel(self, data_path: str):
-        num_processes = os.cpu_count()
+        num_processes = len(os.sched_getaffinity(0)) #os.cpu_count()
         print(f"using {num_processes} cpus")
         splitter_pattern = self.splitter_pattern
 
         with open(data_path, "rb") as f:
-            boundaries = find_chunk_boundaries(f, num_processes, "<|endoftext|>".encode("utf-8"))
+            boundaries = find_chunk_boundaries(f, 256, "<|endoftext|>".encode("utf-8"))
 
-        jobs = [(data_path, start, end, splitter_pattern, self.special_tokens) for start, end in zip(boundaries[:-1], boundaries[1:])]
+        total_chunks = len(boundaries) - 1
+        jobs = [(data_path, start, end, self.splitter_pattern, self.special_tokens, i, total_chunks) 
+                for i, (start, end) in enumerate(zip(boundaries[:-1], boundaries[1:]))]
         
-        print(f"using {len(jobs)} jobs")
-        print("starting parallel")
-        start_time = time.time()
         
-        with Pool(processes=num_processes) as pool:
-            list_of_dicts = pool.starmap(process_chunk, jobs)
+        with Pool(processes=num_processes, maxtasksperchild=2) as pool:
+            list_of_dicts = pool.starmap(process_chunk_simple_progress, jobs)
         
-        print(f"parallel done in {time.time() - start_time:.2f} seconds")
+        print("Done")
         word_counts = defaultdict(int)
         for local_dict in list_of_dicts:
             for word, count in local_dict.items():
@@ -140,9 +147,14 @@ class BPETrainer:
         self._heap_push_pair(new_cnt, b0, b1)
 
 
-    def _initialize_stats(self, input_path):
+    def _initialize_stats(self, input_path, verbose=False):
         # pretokenize
+        if verbose:
+            print("Pretokenization started")
+            start_time = time.time()
         word_counts = self._pretokenize_parallel(input_path)
+        if verbose:
+            print(f"Pretokenization finished in {time.time() - start_time:.2f} seconds")
         self.word_counts = word_counts
         print(len(word_counts))
 
@@ -181,13 +193,13 @@ class BPETrainer:
         for token_str in special_tokens:
             if token_str.encode("utf-8") not in self.vocab.values():
                 self.vocab[len(self.vocab)] = token_str.encode("utf-8")
-        self._initialize_stats(input_path)
+        self._initialize_stats(input_path, verbose)
 
 
 
         while len(self.vocab) < vocab_size:
-            if verbose:
-                print(f"Vocab size: {len(self.vocab)}")
+            #if verbose:
+            #    print(f"Vocab size: {len(self.vocab)}")
     
             if not self.pair_counts:
                 break
@@ -205,7 +217,8 @@ class BPETrainer:
             affected_words = self.pair_to_words[best_pair].copy()
 
             if verbose:
-                print(f"merge {len(self.vocab)}/{vocab_size}: {best_pair} -> {self.vocab[new_idx]} index {new_idx} had {self.pair_counts.get(best_pair, 0)} occurrences")
+                if len(self.vocab) % 1000 == 0:
+                    print(f"merge {len(self.vocab)}/{vocab_size}: {best_pair} -> {self.vocab[new_idx]} index {new_idx} had {self.pair_counts.get(best_pair, 0)} occurrences")
 
             for word in affected_words:
                 if word not in self.word_counts:
@@ -287,8 +300,7 @@ class Tokenizer:
             return []
         ids = [self.inverted_vocab[bytes([byte])] for byte in word_bytes]
         while len(ids) > 1: 
-            possible_merges = [(self.inverted_merge.get((self.vocab[ids[i]], self.vocab[ids[i+1]]), float('inf')), i)
-            for i in range(len(ids) - 1)]
+            possible_merges = [(self.inverted_merge.get((self.vocab[ids[i]], self.vocab[ids[i+1]]), float('inf')), i) for i in range(len(ids) - 1)]
             best_rank, pair_idx = min(possible_merges)
 
             if best_rank == float('inf'):
