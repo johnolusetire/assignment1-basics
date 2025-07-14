@@ -11,7 +11,7 @@ def tokenize_to_file(file_path: str, tokenizer: Tokenizer, save_path: str, *, fl
     with open(save_path, "wb") as out_file:
         with open(file_path, "r", encoding="utf-8", errors="replace") as in_file:
             # Pass file handle directly - encode_iterable reads line by line
-            for token_id in tokenizer.encode_iterable(in_file):
+            for token_id in tokenizer.encode_iterable(in_file, 1000, 1000):
                 buffer.append(token_id)
                 total_tokens += 1
                 
@@ -19,10 +19,14 @@ def tokenize_to_file(file_path: str, tokenizer: Tokenizer, save_path: str, *, fl
                     print(f"Flushing buffer of size {len(buffer):,} tokens")
                     np.array(buffer, dtype=np.uint16).tofile(out_file)
                     buffer.clear()
-        
+                if total_tokens % 5_000_000 == 0:
+                    print("="*50)
+                    print(f"Processed {total_tokens:,} tokens")
+                    print("="*50)        
         if buffer:
+            print(f"Final flush: {len(buffer):,} tokens")
             np.array(buffer, dtype=np.uint16).tofile(out_file)
-    
+    print(f"Done tokenizing file. Total tokens: {total_tokens:,}")
     return total_tokens
 
 def main():
