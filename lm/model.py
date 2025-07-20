@@ -10,30 +10,26 @@ class Linear(nn.Module):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.device = device if device is not None and torch.cuda.is_available() else "cpu"
-        self.dtype = dtype if dtype is not None else torch.float32
         self.weights: Float[Tensor, "d_out d_in"] = self._initialize_weights()
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return einsum(x, self.weights, "... d_in, d_out d_in -> ... d_out")
-    
     def _initialize_weights(self) -> torch.Tensor:
-        weights = torch.empty((self.out_features, self.in_features), dtype=self.dtype, device=self.device)
+        weights = torch.empty((self.out_features, self.in_features))
         std = 2/(self.in_features+self.out_features)
         nn.init.trunc_normal_(weights, mean=0, std=std, a=-3*std, b=3*std)       
         return nn.Parameter(weights)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return einsum(x, self.weights, "... d_in, d_out d_in -> ... d_out")
 
 class Embedding(nn.Module):
     def __init__(self, num_embeddings: int, embedding_dim: int, device: torch.device | None = None, dtype: torch.dtype | None = None) -> None:
         super().__init__()
         self.num_embedddings = num_embeddings
         self.embedding_dim = embedding_dim
-        self.device = device if device is not None and torch.cuda.is_available() else "cpu"
-        self.dtype = dtype if dtype is not None else torch.float32
         self.embedding: Float[Tensor, "vocab_size, d_model"] = self._initialize_embeddings()
    
     def _initialize_embeddings(self) -> torch.Tensor:
-        embedding = torch.empty((self.num_embedddings, self.embedding_dim), dtype=self.dtype, device=self.device)
+        embedding = torch.empty((self.num_embedddings, self.embedding_dim))
         nn.init.trunc_normal_(embedding, a=-3, b=3)       
         return nn.Parameter(embedding)
     
@@ -45,9 +41,7 @@ class RMSNorm(nn.Module):
         super().__init__()
         self.d_model = d_model
         self.eps = eps
-        self.device = device if device is not None and torch.cuda.is_available() else "cpu"
-        self.dtype = dtype if dtype is not None else torch.float32
-        self.gain: Float[Tensor, "d_model"] = nn.Parameter(torch.ones(d_model, device=self.device))
+        self.gain: Float[Tensor, "d_model"] = nn.Parameter(torch.ones(d_model))
    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         in_dtype = x.dtype
@@ -77,7 +71,6 @@ class ROPE(nn.Module):
         self.theta = theta
         self.d_k = d_k
         self.max_seq_len = max_seq_len
-        self.device = device if device is not None and torch.cuda.is_available() else "cpu"
         self.register_buffer(name="cos_thetas", tensor=torch.Tensor([]), persistent=False)
         self.register_buffer(name="sin_thetas", tensor=torch.Tensor([]), persistent=False)
         self._initialize_rope_values()            
@@ -91,8 +84,8 @@ class ROPE(nn.Module):
         cos_thetas: Float[Tensor, "max_seq_len, d_k//2"] = torch.cos(angles)
         sin_thetas: Float[Tensor, "max_seq_len, d_k//2"] = torch.sin(angles)
 
-        self.cos_thetas = cos_thetas.to(self.device)
-        self.sin_thetas = sin_thetas.to(self.device)
+        self.cos_thetas = cos_thetas
+        self.sin_thetas = sin_thetas
         
         # i could repeat and interleave it here or in the forward method storage vs speed tradeoff
         # cos_thetas: Float[Tensor, "max_seq_len, d_k"] = cos_thetas.repeat_interleave(repeats=2, dim=-1)
@@ -106,10 +99,14 @@ class ROPE(nn.Module):
         # x2[..., 1::2] = x[..., 0::2]        
         # result = (x * self.cos_thetas[token_positions].repeat_interleave(repeats=2, dim=-1) + 
         #           x2 * self.sin_thetas[token_positions].repeat_interleave(repeats=2, dim=-1))
+        cos = self.cos_thetas[token_positions]
+        sin = self.sin_thetas[token_positions]
 
         x_evens, x_odds = x[..., ::2], x[..., 1::2]
-        rotated_evens = x_evens * self.cos_thetas[token_positions] - x_odds * self.sin_thetas[token_positions]
-        rotated_odds = x_evens * self.sin_thetas[token_positions] + x_odds * self.cos_thetas[token_positions]
+        # rotated_evens = x_evens * self.cos_thetas[token_positions] - x_odds * self.sin_thetas[token_positions]
+        # rotated_odds = x_evens * self.sin_thetas[token_positions] + x_odds * self.cos_thetas[token_positions]
+        rotated_evens = x_evens * cos - x_odds * sin
+        rotated_odds = x_evens * sin + x_odds * cos
 
         output = torch.empty_like(x)
         output[...,::2] = rotated_evens
@@ -127,13 +124,53 @@ def scaled_dot_product_attention(queries: Float[Tensor, "... queries d_k"],
                                  mask: Bool[Tensor, "queries seq_len"] | None=None) -> Float[Tensor, "... d_v"]:
     
     d_k = keys.shape[-1]
-    attention_weights = einsum(queries, keys, "... queries d_k, ... keys d_k -> ... queries keys") / (d_k**0.5)
+    attention_weights = einsum(queries, keys, "... queries d_k, ... keys d_k -> ... queries keys") / (d_k**0.5) # queries @ keys.transpose(-1,-2)
     if mask is not None:
         attention_weights = torch.masked_fill(attention_weights, ~mask, -torch.inf) # mask value that is False in attn_weights
     attention_scores = softmax(attention_weights, dim=-1)
-    output = einsum(attention_scores, values, "... queries keys, ... keys d_v -> ... queries d_v")
+    output = einsum(attention_scores, values, "... queries keys, ... keys d_v -> ... queries d_v") # @ attn_scores @ 
     return output
-    
 
-
+class MultiHeadAttention(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, rope_theta: float | None=None, max_seq_len: int | None = None) -> None:
+        super().__init__()
+        assert d_model % num_heads == 0, "d_model has to be divisible by numheads"
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+        # self.q_proj_weight = Linear(in_features=d_model, out_features=self.d_k*self.num_heads)
+        # self.k_proj_weight = Linear(in_features=self.d_model, out_features=self.d_k*self.num_heads)
+        # self.v_proj_weight = Linear(in_features=self.d_model, out_features=self.d_k*self.num_heads)
+        self.qkv_proj_weight = Linear(in_features=self.d_model, out_features=3*self.d_k*self.num_heads)
+        self.output_proj = Linear(in_features=self.d_k*self.num_heads, out_features=self.d_model)
+        self.rope = None
+        if rope_theta is not None:
+            self.max_seq_len = max_seq_len if max_seq_len is not None else 64000
+            self.rope = ROPE(rope_theta, d_k=self.d_k, max_seq_len=self.max_seq_len)
     
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None):
+        _, seq_len, _ = x.shape
+        qkv = self.qkv_proj_weight(x) # [batch, seq_len, 3 * num_heads * d_k]
+        q, k, v = rearrange(qkv, "batch seq_len (three num_heads d_k) -> three batch num_heads seq_len d_k", 
+                             three=3, num_heads=self.num_heads, d_k=self.d_k)
+
+        # q = self.q_proj_weight(x)
+        # k = self.k_proj_weight(x)
+        # v = self.v_proj_weight(x)
+
+        # q = rearrange(q, "... seq_len (num_heads d_k) -> ... num_heads seq_len d_k", d_k=self.d_k)
+        # k = rearrange(k, "... seq_len (num_heads d_k) -> ... num_heads seq_len d_k", d_k=self.d_k)
+        # v = rearrange(v, "... seq_len (num_heads d_v) -> ... num_heads seq_len d_v", d_v=self.d_k)
+
+        if self.rope is not None and token_positions is not None:
+            q = self.rope(q, token_positions)
+            k = self.rope(k, token_positions)
+        if not hasattr(self, '_mask') or self._mask.size(0) < seq_len:
+            self._mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device))
+
+        mask = self._mask[:seq_len, :seq_len]
+        attention_ouput_bhsd = scaled_dot_product_attention(queries=q, keys=k, values=v, mask=mask)
+        attention_ouput_bsd = rearrange(attention_ouput_bhsd, "... num_heads seq_len d_model -> ... seq_len (num_heads d_model)")
+        final_attention_output = self.output_proj(attention_ouput_bsd)
+
+        return final_attention_output
