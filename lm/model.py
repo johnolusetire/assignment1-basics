@@ -1,3 +1,4 @@
+from matplotlib.style import context
 import torch
 import torch.nn as nn
 from einops import einsum, rearrange, reduce
@@ -132,19 +133,16 @@ def scaled_dot_product_attention(queries: Float[Tensor, "... queries d_k"],
     return output
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, rope_theta: float | None=None, max_seq_len: int | None = None) -> None:
+    def __init__(self, d_model: int, num_heads: int, rope_theta: float | None=None, max_seq_len: int | None = None, rope_object: ROPE | None = None ) -> None:
         super().__init__()
         assert d_model % num_heads == 0, "d_model has to be divisible by numheads"
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_k = d_model // num_heads
-        # self.q_proj_weight = Linear(in_features=d_model, out_features=self.d_k*self.num_heads)
-        # self.k_proj_weight = Linear(in_features=self.d_model, out_features=self.d_k*self.num_heads)
-        # self.v_proj_weight = Linear(in_features=self.d_model, out_features=self.d_k*self.num_heads)
         self.qkv_proj_weight = Linear(in_features=self.d_model, out_features=3*self.d_k*self.num_heads)
         self.output_proj = Linear(in_features=self.d_k*self.num_heads, out_features=self.d_model)
-        self.rope = None
-        if rope_theta is not None:
+        self.rope = rope_object if rope_object is not None else None
+        if self.rope is None and rope_theta is not None:
             self.max_seq_len = max_seq_len if max_seq_len is not None else 64000
             self.rope = ROPE(rope_theta, d_k=self.d_k, max_seq_len=self.max_seq_len)
     
@@ -153,14 +151,6 @@ class MultiHeadAttention(nn.Module):
         qkv = self.qkv_proj_weight(x) # [batch, seq_len, 3 * num_heads * d_k]
         q, k, v = rearrange(qkv, "batch seq_len (three num_heads d_k) -> three batch num_heads seq_len d_k", 
                              three=3, num_heads=self.num_heads, d_k=self.d_k)
-
-        # q = self.q_proj_weight(x)
-        # k = self.k_proj_weight(x)
-        # v = self.v_proj_weight(x)
-
-        # q = rearrange(q, "... seq_len (num_heads d_k) -> ... num_heads seq_len d_k", d_k=self.d_k)
-        # k = rearrange(k, "... seq_len (num_heads d_k) -> ... num_heads seq_len d_k", d_k=self.d_k)
-        # v = rearrange(v, "... seq_len (num_heads d_v) -> ... num_heads seq_len d_v", d_v=self.d_k)
 
         if self.rope is not None and token_positions is not None:
             q = self.rope(q, token_positions)
@@ -174,3 +164,40 @@ class MultiHeadAttention(nn.Module):
         final_attention_output = self.output_proj(attention_ouput_bsd)
 
         return final_attention_output
+
+class TransformerBlock(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, rope_theta: float, rope_object: ROPE | None = None):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.rmsnorm_attn = RMSNorm(d_model=d_model)
+        self.rmsnorm_ffn = RMSNorm(d_model=d_model)
+        self.attn = MultiHeadAttention(d_model=d_model, num_heads=num_heads, rope_theta=rope_theta, rope_object=rope_object)
+        self.ffn = SwiGLUFeedForward(d_model=d_model, d_ff=d_ff)
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None):
+        token_positions = token_positions if token_positions is not None else torch.arange(0, x.shape[-2])
+        residual = x
+        x = self.attn(self.rmsnorm_attn(x), token_positions) + residual
+        residual = x
+        output = self.ffn(self.rmsnorm_ffn(x)) + residual
+        return output
+
+class TranformerModel(nn.Module):
+    def __init__(self, vocab_size: int, context_length: int, num_layers: int, d_model: int, num_heads: int, d_ff: int, rope_theta: float) -> None:
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_ff = d_ff
+        self.theta = rope_theta
+        self.vocab_size = vocab_size
+        self.context_length = context_length
+        self.rope = ROPE(theta=self.theta, d_k=d_model, max_seq_len=context_length)
+        self.layers = [TransformerBlock(d_model=self.d_model, num_heads=self.num_heads, d_ff=self.d_ff, rope_theta=rope_theta, rope_object=self.rope) for _ in range(num_layers)]
+        self.layers = nn.Sequential(*self.layers)
+        self.input_embeddings = Embedding(num_embeddings=self.vocab_size, embedding_dim=self.d_model)
+        self.output_embeddings = Embedding(num_embeddings=self.vocab_size, embedding_dim=self.d_model)
+
+    def forward(self, x: torch.Tensor):
+        
