@@ -121,17 +121,17 @@ def softmax(x: torch.Tensor, dim: int=-1):
     x = x - x.max(dim=dim, keepdim=True).values
     return torch.exp(x) / torch.sum(torch.exp(x), dim=dim, keepdim=True) + 1e-8
 
-def scaled_dot_product_attention(queries: Float[Tensor, "... seq_len d_k"],
-                                 keys: Float[Tensor, "... seq_len d_k"],
-                                 values: Float[Tensor, "... seq_len d_v"],
-                                 mask: Bool[Tensor, "seq_len seq_len"] | None) -> Float[Tensor, "... d_v"]:
+def scaled_dot_product_attention(queries: Float[Tensor, "... queries d_k"],
+                                 keys: Float[Tensor, "... keys d_k"],
+                                 values: Float[Tensor, "... values d_v"],
+                                 mask: Bool[Tensor, "queries seq_len"] | None=None) -> Float[Tensor, "... d_v"]:
     
     d_k = keys.shape[-1]
-    attention_weights = einsum(queries, keys, "... seq_len_q d_k, ... seq_len_k d_k -> .... seq_len_q seq_len_k") / (d_k**0.5)
+    attention_weights = einsum(queries, keys, "... queries d_k, ... keys d_k -> ... queries keys") / (d_k**0.5)
     if mask is not None:
         attention_weights = torch.masked_fill(attention_weights, ~mask, -torch.inf) # mask value that is False in attn_weights
     attention_scores = softmax(attention_weights, dim=-1)
-    output = einsum(attention_scores, values, "... seq_len_q seq_len_k, ... seq_len_k, d_v -> ... seq_len_q d_v")
+    output = einsum(attention_scores, values, "... queries keys, ... keys d_v -> ... queries d_v")
     return output
     
 
