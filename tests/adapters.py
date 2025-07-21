@@ -396,7 +396,24 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    model = TransformerModel(vocab_size, context_length, num_layers, d_model, num_heads, d_ff, rope_theta)
+
+    for i in range(num_layers):
+        q = weights[f'layers.{i}.attn.q_proj.weight']
+        k = weights[f'layers.{i}.attn.k_proj.weight']
+        v = weights[f"layers.{i}.attn.v_proj.weight"]
+        
+        qkv = torch.cat([q,k,v], dim=0)
+        weights[f'layers.{i}.attn.qkv_proj.weight'] = qkv
+    
+        del weights[f'layers.{i}.attn.q_proj.weight']
+        del weights[f'layers.{i}.attn.k_proj.weight']
+        del weights[f'layers.{i}.attn.v_proj.weight']
+    
+    model.load_state_dict(weights)
+    model = model.to("cuda")
+    return model(in_indices.to('cuda'))
+    # raise NotImplementedError
 
 
 def run_rmsnorm(

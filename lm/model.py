@@ -11,7 +11,7 @@ class Linear(nn.Module):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.weights: Float[Tensor, "d_out d_in"] = self._initialize_weights()
+        self.weight: Float[Tensor, "d_out d_in"] = self._initialize_weights()
     
     def _initialize_weights(self) -> torch.Tensor:
         weights = torch.empty((self.out_features, self.in_features))
@@ -20,14 +20,14 @@ class Linear(nn.Module):
         return nn.Parameter(weights)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return einsum(x, self.weights, "... d_in, d_out d_in -> ... d_out")
+        return einsum(x, self.weight, "... d_in, d_out d_in -> ... d_out")
 
 class Embedding(nn.Module):
     def __init__(self, num_embeddings: int, embedding_dim: int, device: torch.device | None = None, dtype: torch.dtype | None = None) -> None:
         super().__init__()
         self.num_embedddings = num_embeddings
         self.embedding_dim = embedding_dim
-        self.embedding: Float[Tensor, "vocab_size, d_model"] = self._initialize_embeddings()
+        self.weight: Float[Tensor, "vocab_size, d_model"] = self._initialize_embeddings()
    
     def _initialize_embeddings(self) -> torch.Tensor:
         embedding = torch.empty((self.num_embedddings, self.embedding_dim))
@@ -35,21 +35,19 @@ class Embedding(nn.Module):
         return nn.Parameter(embedding)
     
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
-        return self.embedding[token_ids]
+        return self.weight[token_ids]
     
 class RMSNorm(nn.Module):
     def __init__(self, d_model: int, eps: float = 1e-5, device: torch.device | None = None, dtype: torch.dtype | None = None):
         super().__init__()
         self.d_model = d_model
         self.eps = eps
-        self.gain: Float[Tensor, "d_model"] = nn.Parameter(torch.ones(d_model))
+        self.weight: Float[Tensor, "d_model"] = nn.Parameter(torch.ones(d_model))
    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         in_dtype = x.dtype
         x = x.to(torch.float32)
-        # reduce is much slower
-        #result = x * self.gain / torch.sqrt_(self.eps + reduce(x**2, "b s d -> b s ()", reduction="sum") / self.d_model)
-        result = x * self.gain / torch.sqrt_(self.eps + torch.sum(x**2, dim=-1)/self.d_model).unsqueeze(-1)
+        result = x * self.weight / (self.eps + torch.sqrt_(torch.sum(x**2, dim=-1)/self.d_model).unsqueeze(-1))
         return result.to(in_dtype)
 
 class SwiGLUFeedForward(nn.Module):
@@ -87,25 +85,13 @@ class ROPE(nn.Module):
 
         self.cos_thetas = cos_thetas
         self.sin_thetas = sin_thetas
-        
-        # i could repeat and interleave it here or in the forward method storage vs speed tradeoff
-        # cos_thetas: Float[Tensor, "max_seq_len, d_k"] = cos_thetas.repeat_interleave(repeats=2, dim=-1)
-        # sin_thetas: Float[Tensor, "max_seq_len, d_k"] = sin_thetas.repeat_interleave(repeats=2, dim=-1)
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor) -> torch.Tensor:
         token_positions = token_positions.clamp(0, self.max_seq_len - 1)
-        # _, seq_len, d_k = x.shape # x.shape -> b, seq_len, d_model
-        # x2 = x.clone()
-        # x2[..., 0::2] = -x[..., 1::2]
-        # x2[..., 1::2] = x[..., 0::2]        
-        # result = (x * self.cos_thetas[token_positions].repeat_interleave(repeats=2, dim=-1) + 
-        #           x2 * self.sin_thetas[token_positions].repeat_interleave(repeats=2, dim=-1))
         cos = self.cos_thetas[token_positions]
         sin = self.sin_thetas[token_positions]
 
         x_evens, x_odds = x[..., ::2], x[..., 1::2]
-        # rotated_evens = x_evens * self.cos_thetas[token_positions] - x_odds * self.sin_thetas[token_positions]
-        # rotated_odds = x_evens * self.sin_thetas[token_positions] + x_odds * self.cos_thetas[token_positions]
         rotated_evens = x_evens * cos - x_odds * sin
         rotated_odds = x_evens * sin + x_odds * cos
 
@@ -135,20 +121,25 @@ def scaled_dot_product_attention(queries: Float[Tensor, "... queries d_k"],
 class MultiHeadAttention(nn.Module):
     def __init__(self, d_model: int, num_heads: int, rope_theta: float | None=None, max_seq_len: int | None = None, rope_object: ROPE | None = None ) -> None:
         super().__init__()
+
         assert d_model % num_heads == 0, "d_model has to be divisible by numheads"
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_k = d_model // num_heads
-        self.qkv_proj_weight = Linear(in_features=self.d_model, out_features=3*self.d_k*self.num_heads)
+
+        self.qkv_proj = Linear(in_features=self.d_model, out_features=3*self.d_k*self.num_heads)
         self.output_proj = Linear(in_features=self.d_k*self.num_heads, out_features=self.d_model)
+        
         self.rope = rope_object if rope_object is not None else None
+        if rope_theta is not None or rope_object is not None:
+            assert self.d_k % 2 == 0, "Head dimension (d_k) must be even for RoPE"
         if self.rope is None and rope_theta is not None:
             self.max_seq_len = max_seq_len if max_seq_len is not None else 64000
             self.rope = ROPE(rope_theta, d_k=self.d_k, max_seq_len=self.max_seq_len)
     
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None):
         _, seq_len, _ = x.shape
-        qkv = self.qkv_proj_weight(x) # [batch, seq_len, 3 * num_heads * d_k]
+        qkv = self.qkv_proj(x) # [batch, seq_len, 3 * num_heads * d_k]
         q, k, v = rearrange(qkv, "batch seq_len (three num_heads d_k) -> three batch num_heads seq_len d_k", 
                              three=3, num_heads=self.num_heads, d_k=self.d_k)
 
@@ -171,20 +162,22 @@ class TransformerBlock(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_ff = d_ff
-        self.rmsnorm_attn = RMSNorm(d_model=d_model)
-        self.rmsnorm_ffn = RMSNorm(d_model=d_model)
+
+        self.ln1 = RMSNorm(d_model=d_model)
         self.attn = MultiHeadAttention(d_model=d_model, num_heads=num_heads, rope_theta=rope_theta, rope_object=rope_object)
+        self.ln2 = RMSNorm(d_model=d_model)        
         self.ffn = SwiGLUFeedForward(d_model=d_model, d_ff=d_ff)
 
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None):
-        token_positions = token_positions if token_positions is not None else torch.arange(0, x.shape[-2])
+        if token_positions is None:
+            token_positions = torch.arange(0, x.shape[-2])
         residual = x
-        x = self.attn(self.rmsnorm_attn(x), token_positions) + residual
+        x = self.attn(self.ln1(x), token_positions) + residual
         residual = x
-        output = self.ffn(self.rmsnorm_ffn(x)) + residual
+        output = self.ffn(self.ln2(x)) + residual
         return output
 
-class TranformerModel(nn.Module):
+class TransformerModel(nn.Module):
     def __init__(self, vocab_size: int, context_length: int, num_layers: int, d_model: int, num_heads: int, d_ff: int, rope_theta: float) -> None:
         super().__init__()
         self.d_model = d_model
@@ -193,11 +186,25 @@ class TranformerModel(nn.Module):
         self.theta = rope_theta
         self.vocab_size = vocab_size
         self.context_length = context_length
-        self.rope = ROPE(theta=self.theta, d_k=d_model, max_seq_len=context_length)
-        self.layers = [TransformerBlock(d_model=self.d_model, num_heads=self.num_heads, d_ff=self.d_ff, rope_theta=rope_theta, rope_object=self.rope) for _ in range(num_layers)]
-        self.layers = nn.Sequential(*self.layers)
-        self.input_embeddings = Embedding(num_embeddings=self.vocab_size, embedding_dim=self.d_model)
-        self.output_embeddings = Embedding(num_embeddings=self.vocab_size, embedding_dim=self.d_model)
+        d_k = d_model // num_heads
 
-    def forward(self, x: torch.Tensor):
+        self.rope = ROPE(theta=self.theta, d_k=d_k, max_seq_len=context_length)
+        self.token_embeddings = Embedding(num_embeddings=self.vocab_size, embedding_dim=self.d_model)
+        self.layers = nn.ModuleList([TransformerBlock(d_model=self.d_model, num_heads=self.num_heads, d_ff=self.d_ff, rope_theta=rope_theta, rope_object=self.rope) 
+                                    for _ in range(num_layers)])
+        self.ln_final = RMSNorm(d_model=d_model)
+        self.lm_head = Linear(in_features=self.d_model, out_features=self.vocab_size)
+
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None):
+        if token_positions is None:
+            token_positions = torch.arange(x.shape[1], device=x.device).unsqueeze(0)
         
+        #x = x[..., -self.context_length::]
+        x = self.token_embeddings(x)
+        
+        for layer in self.layers:
+            x = layer(x, token_positions)    
+        
+        x = self.ln_final(x)
+        logits = self.lm_head(x)
+        return logits
