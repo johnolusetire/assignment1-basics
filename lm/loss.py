@@ -54,8 +54,8 @@ class AdamW(torch.optim.Optimizer):
                 v: torch.Tensor = state["v"]    
 
                 # update moments and learning rate for this iteration t in-place
-                m.mul_(beta1).add_(grad, alpha= 1 - beta1)
-                v.mul_(beta2).addcmul_(grad, grad, value= 1 - beta2)
+                m.mul_(beta1).add_(grad, alpha= 1 - beta1) # m = beta1 * m + (1 - beta1) * grad
+                v.mul_(beta2).addcmul_(grad, grad, value= 1 - beta2) # v = beta2 * v + (1 - beta2) * grad * grad
 
                 lr_t = lr * (math.sqrt(1 - beta2**t)) / (1 - beta1**t)
 
